@@ -1,27 +1,37 @@
-build*/
-.build*/
-lhelper/
-submodules/
-subprojects/*/
-/appimage*
-.vscode
-.cache
-.ccls-cache
-.lite-debug.log
-.run*
-*.diff
-*.exe
-*.tar.gz
-*.zip
-*.DS_Store
-*App*
-compile_commands.json
-error.txt
-lite-xl*
-LiteXL*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.whl
 
-!resources/windows/*.diff
-!resources/windows/*.exe.manifest.in
-!resources/macos/*.py
-!scripts/innosetup/lite-xl@*.bmp
-!scripts/innosetup/lite-xl-banner@*.bmp
+# Go
+vendor/
+go.sum
+
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
