@@ -50,8 +50,11 @@ function Scrollbar:new(options)
   self.percent = 0
   ---@type boolean @Scrollbar dragging status
   self.dragging = false
-  ---@type integer @Private. Used to offset the start of the drag from the top of the thumb
-  self.drag_start_offset = 0
+  ---@type number @Private. Where along the thumb the drag was started, as a
+  ---fraction of the thumb length [0-1]. Storing a fraction (instead of an
+  ---absolute pixel offset) keeps the grabbed point under the cursor even if the
+  ---thumb is resized mid-drag (e.g. content grows or the UI scale changes).
+  self.drag_thumb_grab = 0
   ---What is currently being hovered. `thumb` implies` track`
   self.hovering = { track = false, thumb = false }
   ---@type "v" | "h"@Vertical or Horizontal
@@ -86,6 +89,11 @@ function Scrollbar:set_forced_status(status)
 end
 
 
+---Transform a rectangle from real (screen) coordinates to the normal
+---coordinate system (across, along, across_size, along_size).
+---For a bare point use `real_to_normal_point`; for a movement delta use
+---`real_to_normal_delta`. They differ because a point has no size and a delta
+---has no origin, so the alignment handling is not the same.
 function Scrollbar:real_to_normal(x, y, w, h)
   x, y, w, h = x or 0, y or 0, w or 0, h or 0
   if self.direction == "v" then
@@ -102,6 +110,8 @@ function Scrollbar:real_to_normal(x, y, w, h)
 end
 
 
+---Transform a rectangle from the normal coordinate system back to real
+---(screen) coordinates. Inverse of `real_to_normal`.
 function Scrollbar:normal_to_real(x, y, w, h)
   x, y, w, h = x or 0, y or 0, w or 0, h or 0
   if self.direction == "v" then
@@ -114,6 +124,47 @@ function Scrollbar:normal_to_real(x, y, w, h)
       x = (self.rect.y + self.rect.h) - x - w
     end
     return y, x, h, w
+  end
+end
+
+
+---Transform a point from real (screen) coordinates to normal coordinates.
+---A point has no size, so (unlike a rectangle) no size term is subtracted when
+---mirroring for start-aligned scrollbars.
+---@param x number
+---@param y number
+---@return number across, number along
+function Scrollbar:real_to_normal_point(x, y)
+  x, y = x or 0, y or 0
+  if self.direction == "v" then
+    if self.alignment == "s" then
+      x = (self.rect.x + self.rect.w) - x
+    end
+    return x, y
+  else
+    if self.alignment == "s" then
+      y = (self.rect.y + self.rect.h) - y
+    end
+    return y, x
+  end
+end
+
+
+---Transform a movement delta from real (screen) coordinates to normal
+---coordinates. A delta has no origin, so we never add the rectangle bounds;
+---we only swap axes (for horizontal scrollbars) and flip the sign of the
+---mirrored (across) axis for start-aligned scrollbars.
+---@param dx number
+---@param dy number
+---@return number d_across, number d_along
+function Scrollbar:real_to_normal_delta(dx, dy)
+  dx, dy = dx or 0, dy or 0
+  if self.direction == "v" then
+    if self.alignment == "s" then dx = -dx end
+    return dx, dy
+  else
+    if self.alignment == "s" then dy = -dy end
+    return dy, dx
   end
 end
 
@@ -170,6 +221,10 @@ end
 
 function Scrollbar:_overlaps_normal(x, y)
   local sx, sy, sw, sh = self:_get_thumb_rect_normal()
+  -- When there's nothing to scroll the thumb (and track) collapse to a zero
+  -- sized rect at the origin; bail out so a point near (0,0) isn't reported as
+  -- hovering a scrollbar that isn't actually drawn.
+  if sw == 0 or sh == 0 then return nil end
   local scrollbar_margin =      self.expand_percent  * (self.expanded_margin or style.expanded_scrollbar_margin) +
                            (1 - self.expand_percent) * (self.contracted_margin or style.contracted_scrollbar_margin)
   local result
@@ -187,24 +242,43 @@ end
 ---Get what part of the scrollbar the coordinates overlap
 ---@return "thumb"|"track"|nil
 function Scrollbar:overlaps(x, y)
-  x, y = self:real_to_normal(x, y)
+  x, y = self:real_to_normal_point(x, y)
   return self:_overlaps_normal(x, y)
+end
+
+
+---Map a mouse "along" coordinate to a scroll percent, keeping the grabbed
+---fraction of the thumb (`self.drag_thumb_grab`) under the cursor.
+---Uses the *current* thumb length so the position stays continuous even if the
+---thumb was resized since the drag started. Returns 0 when the thumb can't move
+---(it's as long as, or longer than, the track) to avoid a division by zero.
+---@param along number @mouse position along the scroll axis (normal coords)
+---@param along_size number @current thumb length along the scroll axis
+---@return number @percent between 0 and 1
+function Scrollbar:_drag_percent(along, along_size)
+  local nr = self.normal_rect
+  local range = nr.along_size - along_size
+  if range <= 0 then return 0 end
+  local thumb_along = along - self.drag_thumb_grab * along_size
+  return common.clamp((thumb_along - nr.along) / range, 0, 1)
 end
 
 
 function Scrollbar:_on_mouse_pressed_normal(button, x, y, clicks)
   local overlaps = self:_overlaps_normal(x, y)
-  if overlaps then
-    local _, along, _, along_size = self:_get_thumb_rect_normal()
-    self.dragging = true
-    if overlaps == "thumb" then
-      self.drag_start_offset = along - y
-      return true
-    elseif overlaps == "track" then
-      local nr = self.normal_rect
-      self.drag_start_offset = - along_size / 2
-      return common.clamp((y - nr.along - along_size / 2) / (nr.along_size - along_size), 0, 1)
-    end
+  if not overlaps then return end
+  local _, along, _, along_size = self:_get_thumb_rect_normal()
+  self.dragging = true
+  if overlaps == "thumb" then
+    -- Record where on the thumb we grabbed, as a fraction of its length, so the
+    -- thumb doesn't jump under the cursor now or if it's later resized.
+    self.drag_thumb_grab = along_size > 0
+      and common.clamp((y - along) / along_size, 0, 1)
+      or 0.5
+    return true
+  else -- "track": jump so the thumb centers on the cursor, then drag from there
+    self.drag_thumb_grab = 0.5
+    return self:_drag_percent(y, along_size)
   end
 end
 
@@ -221,7 +295,7 @@ end
 ---@return boolean|number
 function Scrollbar:on_mouse_pressed(button, x, y, clicks)
   if button ~= "left" then return end
-  x, y = self:real_to_normal(x, y)
+  x, y = self:real_to_normal_point(x, y)
   return self:_on_mouse_pressed_normal(button, x, y, clicks)
 end
 
@@ -242,16 +316,15 @@ end
 ---Updates the scrollbar dragging status
 function Scrollbar:on_mouse_released(button, x, y)
   if button ~= "left" then return end
-  x, y = self:real_to_normal(x, y)
+  x, y = self:real_to_normal_point(x, y)
   return self:_on_mouse_released_normal(button, x, y)
 end
 
 
 function Scrollbar:_on_mouse_moved_normal(x, y, dx, dy)
   if self.dragging then
-    local nr = self.normal_rect
     local _, _, _, along_size = self:_get_thumb_rect_normal()
-    return common.clamp((y - nr.along + self.drag_start_offset) / (nr.along_size - along_size), 0, 1)
+    return self:_drag_percent(y, along_size)
   end
   return self:_update_hover_status_normal(x, y)
 end
@@ -268,8 +341,8 @@ end
 ---representing the percent of the position.
 ---@return boolean|number
 function Scrollbar:on_mouse_moved(x, y, dx, dy)
-  x, y = self:real_to_normal(x, y)
-  dx, dy = self:real_to_normal(dx, dy) -- TODO: do we need this? (is this even correct?)
+  x, y = self:real_to_normal_point(x, y)
+  dx, dy = self:real_to_normal_delta(dx, dy)
   return self:_on_mouse_moved_normal(x, y, dx, dy)
 end
 
