@@ -161,13 +161,58 @@ local function load_node(node, t)
 end
 
 
-local function save_directories()
-  local project_dir = core.root_project().path
+-- Additional (non-root) project directories are stored relative to the root
+-- project's path. Keeping them relative makes a saved workspace portable when
+-- the whole project tree is moved, as long as the extra directories keep the
+-- same position relative to the root project.
+local function save_directories(base_path)
   local dir_list = {}
   for i = 2, #core.projects do
-    dir_list[#dir_list + 1] = common.relative_path(project_dir, core.projects[i].path)
+    dir_list[#dir_list + 1] = common.relative_path(base_path, core.projects[i].path)
   end
   return dir_list
+end
+
+
+-- Turn a stored directory entry back into an absolute path.
+--
+-- Entries written by save_directories are relative to the root project's path,
+-- so they must be resolved against that same base. Resolving them against the
+-- current working directory (as the previous implementation did via
+-- system.absolute_path) meant a workspace restored from a different launch
+-- directory would relocate or lose its extra projects.
+--
+-- Absolute entries are kept as-is (only normalized). These occur with older
+-- workspace data and, on Windows, when an extra project lives on a different
+-- drive than the root project (see common.relative_path).
+local function resolve_project_dir(base_path, dir_name)
+  if common.is_absolute_path(dir_name) then
+    return common.normalize_path(dir_name)
+  end
+  return common.normalize_path(base_path .. PATHSEP .. dir_name)
+end
+
+
+-- Restore the additional project directories, resolving each against the root
+-- project's path. Failures are isolated per-directory so one bad entry cannot
+-- drop the rest, and every problem is reported instead of being swallowed.
+local function restore_directories(base_path, directories)
+  for _, dir_name in ipairs(directories or {}) do
+    local ok_resolve, abs_path = pcall(resolve_project_dir, base_path, dir_name)
+    if not ok_resolve or not abs_path then
+      core.error("[workspace] could not resolve project directory %q", tostring(dir_name))
+    else
+      local info = system.get_file_info(abs_path)
+      if not info or info.type ~= "dir" then
+        core.warn("[workspace] skipping missing project directory %q", abs_path)
+      else
+        local ok, err = pcall(core.add_project, abs_path)
+        if not ok then
+          core.error("[workspace] failed to restore project directory %q: %s", abs_path, tostring(err))
+        end
+      end
+    end
+  end
 end
 
 
@@ -182,21 +227,21 @@ local function save_workspace()
     id = id + 1
   end
   local root = get_unlocked_root(core.root_view.root_node)
-  storage.save(STORAGE_MODULE, project_dir .. "-" .. id, { path = core.root_project().path, documents = save_node(root), directories = save_directories() })
+  local base_path = core.root_project().path
+  storage.save(STORAGE_MODULE, project_dir .. "-" .. id, { path = base_path, documents = save_node(root), directories = save_directories(base_path) })
 end
 
 
 local function load_workspace()
-  local workspace = consume_workspace(core.root_project().path)
+  local base_path = core.root_project().path
+  local workspace = consume_workspace(base_path)
   if workspace then
     local root = get_unlocked_root(core.root_view.root_node)
     local active_view = load_node(root, workspace.documents)
     if active_view then
       core.set_active_view(active_view)
     end
-    for i, dir_name in ipairs(workspace.directories) do
-      core.add_project(system.absolute_path(dir_name))
-    end
+    restore_directories(base_path, workspace.directories)
   end
 end
 
@@ -225,3 +270,13 @@ function core.run(...)
   core.run = run
   return core.run(...)
 end
+
+
+-- Exposed for tests/external use. The plugin installs itself by patching
+-- core.run above; the returned table only carries the pure directory helpers
+-- so the multi-project path logic can be exercised in isolation.
+return {
+  save_directories = save_directories,
+  resolve_project_dir = resolve_project_dir,
+  restore_directories = restore_directories,
+}
