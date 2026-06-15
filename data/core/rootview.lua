@@ -31,8 +31,10 @@ function RootView:new()
   self.overlapping_view = nil
   self.touched_view = nil
   self.defer_open_docs = {}
+  -- whether the first directory of the initial (e.g. macOS dock) launch batch
+  -- has already replaced the current project; later directories from that same
+  -- batch open in new windows instead.
   self.first_dnd_processed = false
-  self.first_update_done = false
   self.context_menu = ContextMenu()
 end
 
@@ -386,55 +388,73 @@ end
 ---@param filename string
 ---@param x number
 ---@param y number
+---@param has_window boolean? whether the drop targeted an existing window
 ---@return boolean
-function RootView:on_file_dropped(filename, x, y)
+function RootView:on_file_dropped(filename, x, y, has_window)
   local node = self.root_node:get_child_overlapping_point(x, y)
   local result = node and node.active_view:on_file_dropped(filename, x, y)
   if result then return result end
   local info = system.get_file_info(filename)
   if info and info.type == "dir" then
     local abspath = system.absolute_path(filename) --[[@as string]]
-    if self.first_update_done then
-      -- ask the user if they want to open it here or somewhere else
-      core.nag_view:show(
-        "Open directory",
-        string.format('You are trying to open "%s"\n', common.home_encode(abspath))
-        .. "Do you want to open this directory here, or in a new window?",
-        {
-          { text = "Current window", default_yes = true },
-          { text = "New window", default_no = true },
-          { text = "Cancel" }
-        },
-        function(opt)
-          if opt.text == "Current window" then
-            core.add_project(abspath)
-          elseif opt.text == "New window" then
-            system.exec(string.format("%q %q", EXEFILE, filename))
-          end
-        end
-      )
-      return true
-    end
-    -- in macOS, when dropping folders into Lite XL in the dock,
-    -- the OS tries to start an instance of Lite XL with each folder as a DND request.
-    -- When this happens, the DND request always arrive before the first update() call.
-    -- We need to change the current project folder for the first request, and start
-    -- new instances for the rest to emulate existing behavior.
-    if self.first_dnd_processed then
-      -- FIXME: port to process API
-      system.exec(string.format("%q %q", EXEFILE, filename))
-    else
-      -- change project directory
-      core.confirm_close_docs(core.docs, function(dirpath)
-        core.open_folder_project(dirpath)
-      end, system.absolute_path(filename))
-      self.first_dnd_processed = true
-    end
+    self:open_dropped_directory(abspath, has_window)
     return true
   end
   -- defer opening docs in case nagview is visible (which will cause a locked node error)
   table.insert(self.defer_open_docs, { filename, x, y })
   return true
+end
+
+
+---Open a directory that was dropped onto the editor.
+---
+---A directory drop reaches us in two ways and both must behave consistently:
+---
+--- * The OS launches the editor with one or more folders (for example by
+---   dropping them onto the macOS dock icon). These drops do not target any
+---   window (`has_window` is false) and the OS may deliver them across several
+---   frames. The decision therefore must NOT depend on whether the first
+---   `update()` has run, otherwise a single launch batch would be split in two
+---   -- some folders replacing the project, the rest popping a dialog. The
+---   first folder of the batch replaces the current project and every
+---   following one opens in a new window.
+--- * The user drags a folder onto a running window (`has_window` is true), in
+---   which case we ask where it should be opened.
+---@param abspath string
+---@param has_window boolean? whether the drop targeted an existing window
+function RootView:open_dropped_directory(abspath, has_window)
+  if has_window then
+    -- interactive drop onto a running window: let the user decide
+    core.nag_view:show(
+      "Open directory",
+      string.format('You are trying to open "%s"\n', common.home_encode(abspath))
+      .. "Do you want to open this directory here, or in a new window?",
+      {
+        { text = "Current window", default_yes = true },
+        { text = "New window", default_no = true },
+        { text = "Cancel" }
+      },
+      function(opt)
+        if opt.text == "Current window" then
+          core.add_project(abspath)
+        elseif opt.text == "New window" then
+          core.open_in_new_instance(abspath)
+        end
+      end
+    )
+    return
+  end
+  -- launch batch (e.g. macOS dock): the first folder replaces the current
+  -- project and the rest open in new windows. Driven by a latch rather than
+  -- the first-update timing so the whole batch behaves the same.
+  if self.first_dnd_processed then
+    core.open_in_new_instance(abspath)
+  else
+    core.confirm_close_docs(core.docs, function(dirpath)
+      core.open_project(dirpath)
+    end, abspath)
+    self.first_dnd_processed = true
+  end
 end
 
 function RootView:process_defer_open_docs()
@@ -538,11 +558,7 @@ function RootView:update()
   self:interpolate_drag_overlay(self.drag_overlay)
   self:interpolate_drag_overlay(self.drag_overlay_tab)
   self:process_defer_open_docs()
-  self.first_update_done = true
   self.context_menu:update()
-  -- set this to true because at this point there are no dnd requests
-  -- that are caused by the initial dnd into dock user action
-  self.first_dnd_processed = true
 end
 
 

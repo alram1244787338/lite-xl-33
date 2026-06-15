@@ -91,6 +91,16 @@ function core.open_project(project)
 end
 
 
+-- Launch a new, detached editor instance for the given path.
+-- This is the single entry point used everywhere we need to open something in
+-- a separate window (folder drops, "Open Project" command, ...). It relies on
+-- the process API with `detach` so the spawned editor is independent from and
+-- outlives this one, replacing the previous scattered `system.exec` calls.
+function core.open_in_new_instance(path)
+  process.start({ EXEFILE, path }, { detach = true })
+end
+
+
 local function strip_trailing_slash(filename)
   if filename:match("[^:]["..PATHSEP.."]$") then
     return filename:sub(1, -2)

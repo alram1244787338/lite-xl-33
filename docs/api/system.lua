@@ -53,7 +53,7 @@ system = {}
 --- * "focuslost"
 ---
 ---File events:
---- * "filedropped" -> filename, x, y
+--- * "filedropped" -> filename, x, y, has_window
 ---
 ---Keyboard events:
 --- * "keypressed" -> key_name

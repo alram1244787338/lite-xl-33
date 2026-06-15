@@ -237,10 +237,16 @@ top:
         SDL_GetMouseState(&mx, &my);
         lua_pushstring(L, "filedropped");
         lua_pushstring(L, e.drop.data);
-        // a DND into dock event fired before a window is created
+        // a DND into dock event fires before a window is created, so there is
+        // no target window and the coordinates default to 0.
         lua_pushinteger(L, mx * (window_renderer ? window_renderer->scale_x : 0));
         lua_pushinteger(L, my * (window_renderer ? window_renderer->scale_y : 0));
-        return 4;
+        // whether the drop targeted an existing window. This is false for the
+        // OS launching us with folders (e.g. dropped onto the macOS dock),
+        // which lets the Lua side route those consistently regardless of when
+        // the events arrive relative to the first frame.
+        lua_pushboolean(L, window_renderer != NULL);
+        return 5;
       }
 
     case SDL_EVENT_KEY_DOWN:
