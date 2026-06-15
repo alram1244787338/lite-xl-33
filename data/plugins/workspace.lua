@@ -165,7 +165,17 @@ local function save_directories()
   local project_dir = core.root_project().path
   local dir_list = {}
   for i = 2, #core.projects do
-    dir_list[#dir_list + 1] = common.relative_path(project_dir, core.projects[i].path)
+    local abs_path = core.projects[i].path
+    local rel = common.relative_path(project_dir, abs_path)
+    -- If relative_path returned the original absolute path (e.g. different
+    -- Windows drives) or the path is already absolute and unrelated to the
+    -- root project, store it as absolute so we don't try to resolve it
+    -- relative to the root project on restore.
+    local is_relative = (rel ~= abs_path) and not common.is_absolute_path(rel)
+    dir_list[#dir_list + 1] = {
+      path = is_relative and rel or abs_path,
+      relative = is_relative,
+    }
   end
   return dir_list
 end
@@ -194,8 +204,37 @@ local function load_workspace()
     if active_view then
       core.set_active_view(active_view)
     end
-    for i, dir_name in ipairs(workspace.directories) do
-      core.add_project(system.absolute_path(dir_name))
+    local project_dir = core.root_project().path
+    for i, entry in ipairs(workspace.directories or {}) do
+      local dir_path, is_relative
+      if type(entry) == "table" then
+        -- New format: { path = "...", relative = true/false }
+        dir_path = entry.path
+        is_relative = entry.relative
+      else
+        -- Backward compatibility: old format stored plain strings that were
+        -- intended to be relative to the root project (but were incorrectly
+        -- resolved against CWD at restore time). Treat them as relative to
+        -- the root project if they are not absolute.
+        dir_path = entry
+        is_relative = not common.is_absolute_path(entry)
+      end
+      local abs_path
+      if is_relative then
+        abs_path = common.normalize_path(project_dir .. PATHSEP .. dir_path)
+      else
+        abs_path = common.normalize_path(dir_path)
+      end
+      local stat = system.get_file_info(abs_path)
+      if stat and stat.type == "dir" then
+        core.add_project(abs_path)
+      else
+        core.warn(
+          "Workspace: could not restore additional directory '%s' "
+          .. "(resolved to '%s'): directory does not exist.",
+          dir_path, abs_path
+        )
+      end
     end
   end
 end
