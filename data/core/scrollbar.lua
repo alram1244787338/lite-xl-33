@@ -111,6 +111,9 @@ function Scrollbar:normal_to_real(x, y, w, h)
     return x, y, w, h
   else
     if self.alignment == "s" then
+      -- The "across" direction (x in normal = real y for horizontal) was
+      -- flipped by real_to_normal. After the swap below, x holds the
+      -- across value, so we unflip it here before swapping back.
       x = (self.rect.y + self.rect.h) - x - w
     end
     return y, x, h, w
@@ -197,6 +200,11 @@ function Scrollbar:_on_mouse_pressed_normal(button, x, y, clicks)
   if overlaps then
     local _, along, _, along_size = self:_get_thumb_rect_normal()
     self.dragging = true
+    -- Snap to fully expanded immediately so the thumb size stays constant
+    -- throughout the drag. Without this, the expand animation would change
+    -- the thumb size frame-by-frame, causing the returned percent to jump
+    -- even when the mouse hasn't moved.
+    self.expand_percent = 1
     if overlaps == "thumb" then
       self.drag_start_offset = along - y
       return true
@@ -247,7 +255,7 @@ function Scrollbar:on_mouse_released(button, x, y)
 end
 
 
-function Scrollbar:_on_mouse_moved_normal(x, y, dx, dy)
+function Scrollbar:_on_mouse_moved_normal(x, y)
   if self.dragging then
     local nr = self.normal_rect
     local _, _, _, along_size = self:_get_thumb_rect_normal()
@@ -269,8 +277,7 @@ end
 ---@return boolean|number
 function Scrollbar:on_mouse_moved(x, y, dx, dy)
   x, y = self:real_to_normal(x, y)
-  dx, dy = self:real_to_normal(dx, dy) -- TODO: do we need this? (is this even correct?)
-  return self:_on_mouse_moved_normal(x, y, dx, dy)
+  return self:_on_mouse_moved_normal(x, y)
 end
 
 ---Updates the scrollbar hovering status
@@ -303,9 +310,13 @@ end
 function Scrollbar:update()
   -- TODO: move the animation code to its own class
   if not self.force_status then
+    -- While dragging, keep the thumb fully expanded so its size stays
+    -- constant and the percent calculation doesn't jump between frames.
     local dest = (self.hovering.track or self.dragging) and 1 or 0
     local diff = math.abs(self.expand_percent - dest)
-    if not config.transitions or diff < 0.05 or config.disabled_transitions["scroll"] then
+    if self.dragging then
+      self.expand_percent = 1
+    elseif not config.transitions or diff < 0.05 or config.disabled_transitions["scroll"] then
       self.expand_percent = dest
     else
       local rate = 0.3

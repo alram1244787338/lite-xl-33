@@ -199,6 +199,8 @@ function View:on_mouse_moved(x, y, dx, dy)
         self.scroll.x = self.scroll.to.x
       end
     end
+    -- hide vertical scrollbar
+    self.v_scrollbar:on_mouse_left()
     return true
   end
 end
