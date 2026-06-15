@@ -31,8 +31,7 @@ function RootView:new()
   self.overlapping_view = nil
   self.touched_view = nil
   self.defer_open_docs = {}
-  self.first_dnd_processed = false
-  self.first_update_done = false
+  self.pending_dir_drops = {}
   self.context_menu = ContextMenu()
 end
 
@@ -393,48 +392,45 @@ function RootView:on_file_dropped(filename, x, y)
   if result then return result end
   local info = system.get_file_info(filename)
   if info and info.type == "dir" then
-    local abspath = system.absolute_path(filename) --[[@as string]]
-    if self.first_update_done then
-      -- ask the user if they want to open it here or somewhere else
-      core.nag_view:show(
-        "Open directory",
-        string.format('You are trying to open "%s"\n', common.home_encode(abspath))
-        .. "Do you want to open this directory here, or in a new window?",
-        {
-          { text = "Current window", default_yes = true },
-          { text = "New window", default_no = true },
-          { text = "Cancel" }
-        },
-        function(opt)
-          if opt.text == "Current window" then
-            core.add_project(abspath)
-          elseif opt.text == "New window" then
-            system.exec(string.format("%q %q", EXEFILE, filename))
-          end
-        end
-      )
-      return true
-    end
-    -- in macOS, when dropping folders into Lite XL in the dock,
-    -- the OS tries to start an instance of Lite XL with each folder as a DND request.
-    -- When this happens, the DND request always arrive before the first update() call.
-    -- We need to change the current project folder for the first request, and start
-    -- new instances for the rest to emulate existing behavior.
-    if self.first_dnd_processed then
-      -- FIXME: port to process API
-      system.exec(string.format("%q %q", EXEFILE, filename))
-    else
-      -- change project directory
-      core.confirm_close_docs(core.docs, function(dirpath)
-        core.open_folder_project(dirpath)
-      end, system.absolute_path(filename))
-      self.first_dnd_processed = true
-    end
+    -- Queue directory drops for deferred processing so that all drops
+    -- arriving in the same event-poll batch are handled together.
+    -- The first drop in a batch replaces the current project; subsequent
+    -- drops open new windows.  This gives identical behavior whether the
+    -- drops arrive before the first frame (macOS Dock) or after the app
+    -- is fully running.
+    table.insert(self.pending_dir_drops, filename)
     return true
   end
   -- defer opening docs in case nagview is visible (which will cause a locked node error)
   table.insert(self.defer_open_docs, { filename, x, y })
   return true
+end
+
+---Processes all queued directory drops.
+---
+---The first drop in the batch replaces the current project (in the same
+---window).  Any additional drops in the same batch each spawn a new Lite XL
+---window via the process API.
+function RootView:process_pending_dir_drops()
+  if #self.pending_dir_drops == 0 then return end
+  local drops = self.pending_dir_drops
+  self.pending_dir_drops = {}
+
+  -- Spawn new windows for every drop after the first.
+  for i = 2, #drops do
+    local abspath = system.absolute_path(drops[i])
+    if abspath then
+      core.open_project_in_new_window(abspath)
+    end
+  end
+
+  -- Replace the current project with the first dropped directory.
+  local abspath = system.absolute_path(drops[1])
+  if abspath then
+    core.confirm_close_docs(core.docs, function(dirpath)
+      core.open_project(dirpath)
+    end, abspath)
+  end
 end
 
 function RootView:process_defer_open_docs()
@@ -537,12 +533,9 @@ function RootView:update()
   self:update_drag_overlay()
   self:interpolate_drag_overlay(self.drag_overlay)
   self:interpolate_drag_overlay(self.drag_overlay_tab)
+  self:process_pending_dir_drops()
   self:process_defer_open_docs()
-  self.first_update_done = true
   self.context_menu:update()
-  -- set this to true because at this point there are no dnd requests
-  -- that are caused by the initial dnd into dock user action
-  self.first_dnd_processed = true
 end
 
 

@@ -91,6 +91,20 @@ function core.open_project(project)
 end
 
 
+---Opens a directory as a project in a new Lite XL window.
+---Spawns a detached child process using the process API rather than
+---system.exec, so the new window is independent of the parent's lifecycle.
+---@param dirpath string Absolute path of the directory to open.
+function core.open_project_in_new_window(dirpath)
+  process.start({ EXEFILE, dirpath }, {
+    detach = true,
+    stdin  = process.REDIRECT_DISCARD,
+    stdout = process.REDIRECT_DISCARD,
+    stderr = process.REDIRECT_DISCARD,
+  })
+end
+
+
 local function strip_trailing_slash(filename)
   if filename:match("[^:]["..PATHSEP.."]$") then
     return filename:sub(1, -2)
